@@ -1,0 +1,13 @@
+# Contracts
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# Backend
+backend/node_modules/
+backend/dist/
+backend/.env
+
+# General
+.DS_Store
+*.log
