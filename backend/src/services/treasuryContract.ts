@@ -56,10 +56,10 @@ export async function setAgentPolicy(agentAddress: string, dailyCapSmallestUnit:
 export async function allowCounterparty(
   agentAddress: string,
   identifier: string,
-  mooveHandle: string,
+  moovePaymentLinkId: string,
   label?: string
 ) {
-  const id = registerCounterparty({ identifier, mooveHandle, label });
+  const id = registerCounterparty({ identifier, moovePaymentLinkId, label });
   const contract = getAdminContract();
   const tx = await contract.setCounterpartyAllowed(agentAddress, id, true);
   await tx.wait();
@@ -68,15 +68,41 @@ export async function allowCounterparty(
 
 export async function getAgentStatus(agentAddress: string) {
   const { readContract } = requireConfigured();
-  const [balance, remainingDailyAllowance] = await Promise.all([
+  const [balance, remainingDailyAllowance, policy] = await Promise.all([
     readContract.balanceOf(agentAddress),
     readContract.remainingDailyAllowance(agentAddress),
+    readContract.policies(agentAddress), // returns [dailyCap, exists]
   ]);
   return {
     agent: agentAddress,
     balance: balance.toString(),
     remainingDailyAllowance: remainingDailyAllowance.toString(),
+    dailyCap: policy.exists ? policy[0].toString() : "0",
   };
+}
+
+/**
+ * DEMO ONLY. Signs and submits spend() using a private key passed in at
+ * call time (from DEMO_AGENT_PRIVATE_KEY, wired up by the demo route) —
+ * this is what lets the dashboard's command line actually trigger a real
+ * on-chain spend without a separate bot script running somewhere. This is
+ * NOT how a real agent should work: a real agent holds its own key and
+ * calls spend() itself. This function exists purely so the demo has
+ * something to point a command at.
+ */
+export async function submitDemoSpend(
+  agentPrivateKey: string,
+  counterpartyIdentifier: string,
+  amountSmallestUnit: bigint
+) {
+  const { provider } = requireConfigured();
+  const wallet = new Wallet(agentPrivateKey, provider);
+  const contract = new Contract(TREASURY_ADDRESS as string, abi, wallet);
+  const counterpartyId = counterpartyIdFor(counterpartyIdentifier);
+  const requestId = counterpartyIdFor(`${counterpartyIdentifier}:${Date.now()}:${Math.random()}`);
+  const tx = await contract.spend(counterpartyId, amountSmallestUnit, requestId);
+  const receipt = await tx.wait();
+  return { txHash: receipt?.hash ?? tx.hash, requestId, agent: wallet.address };
 }
 
 /**
@@ -109,9 +135,8 @@ export function startSpendListener() {
       }
 
       const result = await settle({
-        destinationMooveHandle: counterparty.mooveHandle,
+        paymentLinkId: counterparty.moovePaymentLinkId,
         amount,
-        assetSymbol: "USDC",
         requestId,
       });
 
@@ -121,8 +146,8 @@ export function startSpendListener() {
         counterpartyLabel: counterparty.label ?? counterparty.identifier,
         amount: amount.toString(),
         requestId,
-        status: result.ok ? "settled" : "settlement_failed",
-        mooveSettlementId: result.mooveSettlementId,
+        status: result.status,
+        settlementTxHash: result.txHash,
         txHash: event.transactionHash,
       });
     }

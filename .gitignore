@@ -8,6 +8,10 @@ backend/node_modules/
 backend/dist/
 backend/.env
 
+# Dashboard
+dashboard/node_modules/
+dashboard/.env
+
 # General
 .DS_Store
 *.log
