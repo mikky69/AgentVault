@@ -162,7 +162,7 @@ export default function App() {
       <div style={{ maxWidth: 640, margin: "0 auto" }}>
         {/* Wordmark header — outside the card, like a page title */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
-          <img src={logo} alt="AgentVault" style={{ height: 28, width: "auto", display: "block" }} />
+          <img src={logo} alt="AgentVault" style={{ height: 100, width: "auto", display: "block" }} />
           <div style={{ fontSize: 12, color: C.dim }}>agent monitor</div>
         </div>
 
