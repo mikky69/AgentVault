@@ -121,24 +121,3 @@ Type `spend <counterparty-identifier> <amount>` into the terminal's
 command line (e.g. `spend provider-a 10`) to trigger a real `spend()`
 call from the demo agent wallet — this is what the activity log then
 picks up and settles.
-
-## Suggested milestone split (for the Moove application)
-
-1. **Milestone 1** — AgentTreasury deployed to Base Sepolia + policy
-   enforcement demo (this repo's current state, once deployed)
-2. **Milestone 2** — live settlement demo against a real Moove payment
-   link (same-asset path, verified end-to-end with real funds)
-3. **Milestone 3** — dashboard UI on top of the existing backend routes;
-   cross-chain settlement wired in the moment Moove Send/Swap ships
-
-## Applying to the Moove Developer Program
-
-1. Claim a Moove Handle first — the grant disburses there, so the
-   application means nothing without one.
-2. Submit via the program's application form (linked from
-   moove.xyz/blog/everything-you-need-to-know-about-moove-developer-program),
-   with the repo link and the milestone split above.
-3. Frame it exactly as this README does: what's live and verified now,
-   what's genuinely roadmap-dependent on Moove's side. Every application
-   gets a call with the founding team — precision here reads as
-   credibility, not hedging.
