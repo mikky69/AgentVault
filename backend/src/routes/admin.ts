@@ -1,7 +1,10 @@
 import { FastifyInstance } from "fastify";
 import { setAgentPolicy, allowCounterparty } from "../services/treasuryContract.js";
+import { requireAdmin } from "../services/adminAuth.js";
 
 export async function adminRoutes(app: FastifyInstance) {
+  app.addHook("preHandler", async (request) => requireAdmin(request));
+
   app.post<{
     Params: { address: string };
     Body: { dailyCap: string }; // smallest unit, as a string to avoid JS number precision issues
@@ -12,8 +15,14 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!dailyCap) {
       return reply.status(400).send({ error: "dailyCap is required (smallest unit, as a string)" });
     }
+    let cap: bigint;
+    try {
+      cap = BigInt(dailyCap);
+    } catch {
+      return reply.status(400).send({ error: "dailyCap must be an integer string in the token's smallest unit" });
+    }
 
-    const receipt = await setAgentPolicy(address, BigInt(dailyCap));
+    const receipt = await setAgentPolicy(address, cap);
     return { ok: true, txHash: receipt?.hash };
   });
 

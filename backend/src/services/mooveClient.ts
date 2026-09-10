@@ -1,25 +1,10 @@
-import { Contract, Wallet, JsonRpcProvider } from "ethers";
+import { Contract, Wallet, JsonRpcProvider, isAddress } from "ethers";
 
 /**
- * Moove's live API surface today is receive-only: you can create/list your
- * OWN payment links, and anyone can read a link's public data (including
- * its destinationAddress) with no auth at all. There is no Send, Swap, or
- * Bridge API yet — Moove's own docs list those as "coming soon." So there
- * is no endpoint AgentVault can call to say "pay this counterparty X" in
- * general.
- *
- * What IS real and live: if the counterparty's payment link happens to
- * settle in the exact same token, on the exact same chain, as what's
- * leaving our treasury, paying it is just an ERC20 transfer to the link's
- * destinationAddress — which is precisely what Moove's own checkout does
- * for a same-asset payer (and why that case is fee-free per their pricing
- * page). That's the only path this file automates for real.
- *
- * Anything else — a counterparty who wants a different token or chain —
- * has no live automated path today. We report that honestly
- * (`cross_chain_unsupported`) instead of pretending to settle it. The day
- * Moove Send/Swap ships, that branch is the only thing that needs to
- * change here.
+ * AgentVault currently supports direct settlement only when the payment
+ * link's destination uses the treasury's exact token and chain. Cross-chain
+ * and cross-token routing must use an authenticated Moove integration once
+ * its server-to-server settlement contract is available and audited here.
  */
 
 const MOOVE_API_BASE_URL = "https://api.moove.xyz";
@@ -77,6 +62,22 @@ export function extractPaymentLinkId(idOrUrl: string): string {
 }
 
 let relayerWallet: Wallet | undefined;
+export async function validateSettlementConfiguration(): Promise<void> {
+  if (!OUR_TOKEN_ADDRESS || !isAddress(OUR_TOKEN_ADDRESS)) {
+    throw new Error("SETTLEMENT_TOKEN_ADDRESS must be a valid EVM token address.");
+  }
+  if (!OUR_CHAIN_ID || !/^\d+$/.test(OUR_CHAIN_ID)) {
+    throw new Error("SETTLEMENT_CHAIN_ID must be a numeric chain id.");
+  }
+  if (!RELAYER_RPC_URL || !RELAYER_PRIVATE_KEY) {
+    throw new Error("SETTLEMENT_RPC_URL and RELAYER_PRIVATE_KEY must be set to execute settlement.");
+  }
+  const network = await new JsonRpcProvider(RELAYER_RPC_URL).getNetwork();
+  if (network.chainId !== BigInt(OUR_CHAIN_ID)) {
+    throw new Error(`Settlement RPC chain id ${network.chainId} does not match SETTLEMENT_CHAIN_ID ${OUR_CHAIN_ID}.`);
+  }
+}
+
 function getRelayerWallet(): Wallet {
   if (!RELAYER_RPC_URL || !RELAYER_PRIVATE_KEY) {
     throw new Error("SETTLEMENT_RPC_URL and RELAYER_PRIVATE_KEY must be set to execute a live settlement.");
@@ -88,6 +89,7 @@ function getRelayerWallet(): Wallet {
 }
 
 export async function settle(params: SettleParams): Promise<SettleResult> {
+  await validateSettlementConfiguration();
   const link = await fetchPaymentLink(params.paymentLinkId);
 
   if (!link) {
@@ -107,18 +109,6 @@ export async function settle(params: SettleParams): Promise<SettleResult> {
         `a different asset/chain. Needs Moove Send/Swap (not yet live) or manual handling.`
     );
     return { ok: false, status: "cross_chain_unsupported", raw: link };
-  }
-
-  if (!process.env.SETTLEMENT_RPC_URL || !process.env.RELAYER_PRIVATE_KEY) {
-    // Same asset/chain, but this deployment hasn't configured a relayer
-    // wallet to actually move funds yet — surface that plainly rather than
-    // silently no-op'ing.
-    console.warn(
-      `[mooveClient] MOCK SETTLEMENT — asset/chain match confirmed for link ${link.id}, ` +
-        `but SETTLEMENT_RPC_URL/RELAYER_PRIVATE_KEY are not set. ` +
-        `Would transfer ${params.amount} to ${link.destinationAddress}.`
-    );
-    return { ok: true, status: "settled", txHash: `mock_${params.requestId}` };
   }
 
   const wallet = getRelayerWallet();

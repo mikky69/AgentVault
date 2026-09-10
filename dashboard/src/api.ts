@@ -6,7 +6,7 @@ export interface AuditEntry {
   counterpartyLabel?: string;
   amount: string;
   requestId: string;
-  status: "settled" | "cross_chain_unsupported" | "link_not_found" | "error" | "unresolved_counterparty";
+  status: "pending" | "processing" | "settled" | "cross_chain_unsupported" | "link_not_found" | "error" | "unresolved_counterparty";
   settlementTxHash?: string;
   txHash?: string;
   timestamp: number;
@@ -39,8 +39,8 @@ export function fetchAgentStatus(agent: string): Promise<AgentStatus> {
   return fetch(`${BACKEND_URL}/agents/${agent}`).then((r) => asJson<AgentStatus>(r));
 }
 
-export function fetchCounterparties(): Promise<{ entries: Counterparty[] }> {
-  return fetch(`${BACKEND_URL}/counterparties`).then((r) => asJson(r));
+export function fetchCounterparties(agent: string): Promise<{ entries: Counterparty[] }> {
+  return fetch(`${BACKEND_URL}/agents/${agent}/counterparties`).then((r) => asJson(r));
 }
 
 export function submitDemoSpend(counterpartyIdentifier: string, amountSmallestUnit: string) {

@@ -1,159 +1,182 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { Contract, JsonRpcProvider, Wallet, EventLog } from "ethers";
-import { registerCounterparty, resolveCounterparty, counterpartyIdFor } from "./counterpartyRegistry.js";
+import { Contract, JsonRpcProvider, Wallet, isAddress, getAddress } from "ethers";
+import { activateCounterparty, counterpartyIdFor, resolveCounterparty, stageCounterparty } from "./counterpartyRegistry.js";
+import { getCheckpoint, getDueSpends, markSpendProcessing, markSpendResult, recordSpendEvent, setCheckpoint } from "./auditLog.js";
 import { settle } from "./mooveClient.js";
-import { recordAuditEntry } from "./auditLog.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const abi = JSON.parse(readFileSync(path.join(__dirname, "../abi/AgentTreasury.json"), "utf8"));
+const treasuryArtifact = JSON.parse(readFileSync(path.join(__dirname, "../abi/AgentTreasury.json"), "utf8"));
+const abi = Array.isArray(treasuryArtifact) ? treasuryArtifact : treasuryArtifact.abi;
 
-const RPC_URL = process.env.BASE_SEPOLIA_RPC_URL;
+if (!Array.isArray(abi)) throw new Error("AgentTreasury ABI is missing or invalid.");
+
+const RPC_URL = process.env.EVM_RPC_URL ?? process.env.BASE_SEPOLIA_RPC_URL;
 const TREASURY_ADDRESS = process.env.AGENT_TREASURY_ADDRESS;
-const OWNER_PRIVATE_KEY = process.env.OWNER_PRIVATE_KEY; // admin key: setPolicy / setCounterpartyAllowed
+const OWNER_PRIVATE_KEY = process.env.OWNER_PRIVATE_KEY;
+const EVENT_CONFIRMATIONS = Number(process.env.EVENT_CONFIRMATIONS ?? 3);
+const EVENT_POLL_INTERVAL_MS = Number(process.env.EVENT_POLL_INTERVAL_MS ?? 12_000);
+const CONTRACT_DEPLOYMENT_BLOCK = Number(process.env.CONTRACT_DEPLOYMENT_BLOCK ?? 0);
+const EXPECTED_CHAIN_ID = Number(process.env.CHAIN_ID ?? 0);
+const CHECKPOINT_CONSUMER = "agent-treasury-spend-listener-v1";
 
 let provider: JsonRpcProvider | undefined;
 let readContract: Contract | undefined;
 let adminContract: Contract | undefined;
+let syncing = false;
 
 function requireConfigured(): { provider: JsonRpcProvider; readContract: Contract } {
   if (!RPC_URL || !TREASURY_ADDRESS) {
-    throw new Error(
-      "BASE_SEPOLIA_RPC_URL and AGENT_TREASURY_ADDRESS must be set (see .env.example) " +
-        "before the treasury contract can be reached."
-    );
+    throw new Error("EVM_RPC_URL and AGENT_TREASURY_ADDRESS must be set before the treasury contract can be reached.");
   }
+  if (!isAddress(TREASURY_ADDRESS)) throw new Error("AGENT_TREASURY_ADDRESS is not a valid EVM address.");
   if (!provider) provider = new JsonRpcProvider(RPC_URL);
-  if (!readContract) readContract = new Contract(TREASURY_ADDRESS, abi, provider);
+  if (!readContract) readContract = new Contract(getAddress(TREASURY_ADDRESS), abi, provider);
   return { provider, readContract };
 }
 
 function getAdminContract(): Contract {
   const { provider } = requireConfigured();
-  if (!OWNER_PRIVATE_KEY) {
-    throw new Error("OWNER_PRIVATE_KEY must be set to perform admin actions (setPolicy, allow counterparty).");
-  }
-  if (!adminContract) {
-    const wallet = new Wallet(OWNER_PRIVATE_KEY, provider);
-    adminContract = new Contract(TREASURY_ADDRESS as string, abi, wallet);
-  }
+  if (!OWNER_PRIVATE_KEY) throw new Error("OWNER_PRIVATE_KEY must be set to perform admin actions.");
+  if (!adminContract) adminContract = new Contract(getAddress(TREASURY_ADDRESS as string), abi, new Wallet(OWNER_PRIVATE_KEY, provider));
   return adminContract;
 }
 
-/** Sets an agent's daily cap on-chain. Amount is already in the token's smallest unit. */
+export function requireAgentAddress(address: string): string {
+  if (!isAddress(address)) throw new Error("agent address must be a valid EVM address");
+  return getAddress(address);
+}
+
 export async function setAgentPolicy(agentAddress: string, dailyCapSmallestUnit: bigint) {
-  const contract = getAdminContract();
-  const tx = await contract.setPolicy(agentAddress, dailyCapSmallestUnit);
+  if (dailyCapSmallestUnit <= 0n) throw new Error("dailyCap must be greater than zero");
+  const tx = await getAdminContract().setPolicy(requireAgentAddress(agentAddress), dailyCapSmallestUnit);
   return tx.wait();
 }
 
-/**
- * Allows a counterparty for an agent AND registers the identifier -> Moove
- * destination mapping locally, so a later SpendExecuted event for this id
- * can actually be resolved and settled.
- */
 export async function allowCounterparty(
   agentAddress: string,
   identifier: string,
   moovePaymentLinkId: string,
   label?: string
 ) {
-  const id = registerCounterparty({ identifier, moovePaymentLinkId, label });
-  const contract = getAdminContract();
-  const tx = await contract.setCounterpartyAllowed(agentAddress, id, true);
+  const agent = requireAgentAddress(agentAddress);
+  const id = await stageCounterparty(agent, { identifier, moovePaymentLinkId, label });
+  const tx = await getAdminContract().setCounterpartyAllowed(agent, id, true);
   await tx.wait();
+  await activateCounterparty(agent, id);
   return { counterpartyId: id };
 }
 
 export async function getAgentStatus(agentAddress: string) {
+  const agent = requireAgentAddress(agentAddress);
   const { readContract } = requireConfigured();
   const [balance, remainingDailyAllowance, policy] = await Promise.all([
-    readContract.balanceOf(agentAddress),
-    readContract.remainingDailyAllowance(agentAddress),
-    readContract.policies(agentAddress), // returns [dailyCap, exists]
+    readContract.balanceOf(agent),
+    readContract.remainingDailyAllowance(agent),
+    readContract.policies(agent),
   ]);
   return {
-    agent: agentAddress,
+    agent,
     balance: balance.toString(),
     remainingDailyAllowance: remainingDailyAllowance.toString(),
     dailyCap: policy.exists ? policy[0].toString() : "0",
   };
 }
 
-/**
- * DEMO ONLY. Signs and submits spend() using a private key passed in at
- * call time (from DEMO_AGENT_PRIVATE_KEY, wired up by the demo route) —
- * this is what lets the dashboard's command line actually trigger a real
- * on-chain spend without a separate bot script running somewhere. This is
- * NOT how a real agent should work: a real agent holds its own key and
- * calls spend() itself. This function exists purely so the demo has
- * something to point a command at.
- */
-export async function submitDemoSpend(
-  agentPrivateKey: string,
-  counterpartyIdentifier: string,
-  amountSmallestUnit: bigint
-) {
+export async function submitDemoSpend(agentPrivateKey: string, counterpartyIdentifier: string, amountSmallestUnit: bigint) {
+  if (amountSmallestUnit <= 0n) throw new Error("amount must be greater than zero");
   const { provider } = requireConfigured();
   const wallet = new Wallet(agentPrivateKey, provider);
-  const contract = new Contract(TREASURY_ADDRESS as string, abi, wallet);
+  const contract = new Contract(getAddress(TREASURY_ADDRESS as string), abi, wallet);
   const counterpartyId = counterpartyIdFor(counterpartyIdentifier);
-  const requestId = counterpartyIdFor(`${counterpartyIdentifier}:${Date.now()}:${Math.random()}`);
+  const requestId = counterpartyIdFor(`${counterpartyIdentifier}:${Date.now()}:${crypto.randomUUID()}`);
   const tx = await contract.spend(counterpartyId, amountSmallestUnit, requestId);
   const receipt = await tx.wait();
   return { txHash: receipt?.hash ?? tx.hash, requestId, agent: wallet.address };
 }
 
-/**
- * Subscribes to SpendExecuted and, for each one, resolves the counterparty
- * and calls Moove to actually deliver the funds. This is the bridge between
- * "on-chain authorization happened" and "money actually moved off-chain."
- */
-export function startSpendListener() {
-  const { readContract } = requireConfigured();
+async function processDueSpends(): Promise<void> {
+  for (const spend of await getDueSpends()) {
+    if (!await markSpendProcessing(spend.requestId)) continue;
 
-  readContract.on(
-    "SpendExecuted",
-    async (agent: string, counterpartyId: string, amount: bigint, requestId: string, day: bigint, event: EventLog) => {
-      const counterparty = resolveCounterparty(counterpartyId);
-
+    try {
+      const counterparty = await resolveCounterparty(spend.agent, spend.counterpartyId);
       if (!counterparty) {
-        console.error(
-          `[spendListener] Unknown counterpartyId ${counterpartyId} for agent ${agent} — ` +
-            `cannot settle. Was it registered via allowCounterparty()?`
-        );
-        recordAuditEntry({
-          agent,
-          counterpartyId,
-          amount: amount.toString(),
-          requestId,
-          status: "unresolved_counterparty",
-          txHash: event.transactionHash,
+        await markSpendResult(spend.requestId, "unresolved_counterparty", {
+          errorMessage: "No active counterparty record exists for this agent and counterparty id.",
+          retry: true,
         });
-        return;
+        continue;
       }
 
       const result = await settle({
         paymentLinkId: counterparty.moovePaymentLinkId,
-        amount,
-        requestId,
+        amount: BigInt(spend.amount),
+        requestId: spend.requestId,
       });
-
-      recordAuditEntry({
-        agent,
-        counterpartyId,
+      await markSpendResult(spend.requestId, result.status, {
         counterpartyLabel: counterparty.label ?? counterparty.identifier,
-        amount: amount.toString(),
-        requestId,
-        status: result.status,
         settlementTxHash: result.txHash,
-        txHash: event.transactionHash,
+        errorMessage: result.ok ? undefined : result.status,
+        retry: result.status === "link_not_found" || result.status === "error",
       });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await markSpendResult(spend.requestId, "error", { errorMessage: message, retry: true });
     }
-  );
-
-  console.log("[spendListener] Listening for SpendExecuted events...");
+  }
 }
 
-export { counterpartyIdFor };
+async function syncSpendEvents(): Promise<void> {
+  if (syncing) return;
+  syncing = true;
+  try {
+    if (!Number.isInteger(CONTRACT_DEPLOYMENT_BLOCK) || CONTRACT_DEPLOYMENT_BLOCK <= 0) {
+      throw new Error("CONTRACT_DEPLOYMENT_BLOCK must be set to the deployment block for durable event indexing.");
+    }
+    const { provider, readContract } = requireConfigured();
+    const latestBlock = await provider.getBlockNumber();
+    const safeBlock = latestBlock - EVENT_CONFIRMATIONS;
+    if (safeBlock < CONTRACT_DEPLOYMENT_BLOCK) return;
+
+    const checkpoint = await getCheckpoint(CHECKPOINT_CONSUMER);
+    const fromBlock = checkpoint === undefined ? CONTRACT_DEPLOYMENT_BLOCK : checkpoint + 1;
+    if (fromBlock <= safeBlock) {
+      const logs = await readContract.queryFilter(readContract.filters.SpendExecuted(), fromBlock, safeBlock);
+      for (const log of logs) {
+        const parsed = readContract.interface.parseLog(log);
+        if (!parsed) continue;
+        await recordSpendEvent({
+          requestId: String(parsed.args.requestId),
+          txHash: log.transactionHash,
+          logIndex: log.index,
+          blockNumber: log.blockNumber,
+          agent: String(parsed.args.agent),
+          counterpartyId: String(parsed.args.counterpartyId),
+          amount: String(parsed.args.amount),
+        });
+      }
+      await setCheckpoint(CHECKPOINT_CONSUMER, safeBlock);
+    }
+    await processDueSpends();
+  } finally {
+    syncing = false;
+  }
+}
+
+export async function startSpendListener(): Promise<void> {
+  const { provider } = requireConfigured();
+  const network = await provider.getNetwork();
+  if (!Number.isInteger(EXPECTED_CHAIN_ID) || EXPECTED_CHAIN_ID <= 0) {
+    throw new Error("CHAIN_ID must be set to the chain that hosts AgentTreasury.");
+  }
+  if (network.chainId !== BigInt(EXPECTED_CHAIN_ID)) {
+    throw new Error(`RPC chain id ${network.chainId} does not match configured CHAIN_ID ${EXPECTED_CHAIN_ID}.`);
+  }
+  await syncSpendEvents();
+  setInterval(() => {
+    void syncSpendEvents().catch((error) => console.error("[spendListener] sync failed", error));
+  }, EVENT_POLL_INTERVAL_MS).unref();
+  console.log("[spendListener] Indexing confirmed SpendExecuted events from Postgres checkpoint.");
+}

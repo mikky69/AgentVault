@@ -2,6 +2,7 @@
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+contracts/.env
 
 # Backend
 backend/node_modules/
@@ -10,6 +11,7 @@ backend/.env
 
 # Dashboard
 dashboard/node_modules/
+dashboard/dist/
 dashboard/.env
 
 # General

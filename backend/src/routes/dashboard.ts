@@ -6,15 +6,15 @@ import { listCounterparties } from "../services/counterpartyRegistry.js";
 export async function dashboardRoutes(app: FastifyInstance) {
   app.get<{ Params: { address: string } }>("/agents/:address", async (req) => {
     const status = await getAgentStatus(req.params.address);
-    const history = getAuditLog(req.params.address);
+    const history = await getAuditLog(req.params.address);
     return { ...status, history };
   });
 
   app.get("/audit", async () => {
-    return { entries: getAuditLog() };
+    return { entries: await getAuditLog() };
   });
 
-  app.get("/counterparties", async () => {
-    return { entries: listCounterparties() };
+  app.get<{ Params: { address: string } }>("/agents/:address/counterparties", async (req) => {
+    return { entries: await listCounterparties(req.params.address) };
   });
 }

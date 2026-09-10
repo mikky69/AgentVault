@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AGENT_ADDRESS, TOKEN_DECIMALS } from "./config";
+import { AGENT_ADDRESS, ENABLE_DEMO_SPEND, TOKEN_DECIMALS } from "./config";
 import { AgentStatus, Counterparty, fetchAgentStatus, fetchCounterparties, submitDemoSpend } from "./api";
 import logo from "./assets/AgentVault.png";
 
@@ -30,6 +30,9 @@ function statusStyles(status: string): { bg: string; text: string; display: stri
       return { bg: "rgba(245,166,35,0.12)", text: C.pending, display: "Needs manual bridge" };
     case "unresolved_counterparty":
       return { bg: "rgba(245,166,35,0.12)", text: C.pending, display: "Unresolved" };
+    case "pending":
+    case "processing":
+      return { bg: "rgba(76,141,255,0.12)", text: C.accent, display: "Settling" };
     default:
       return { bg: "rgba(240,89,107,0.12)", text: C.error, display: "Failed" };
   }
@@ -105,7 +108,7 @@ export default function App() {
     let cancelled = false;
     async function poll() {
       try {
-        const [statusRes, cpRes] = await Promise.all([fetchAgentStatus(AGENT_ADDRESS), fetchCounterparties()]);
+        const [statusRes, cpRes] = await Promise.all([fetchAgentStatus(AGENT_ADDRESS), fetchCounterparties(AGENT_ADDRESS)]);
         if (cancelled) return;
         setStatus(statusRes);
         setCounterparties(cpRes.entries);
@@ -290,8 +293,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Command line */}
-        <div
+        {ENABLE_DEMO_SPEND && <div
           style={{
             marginTop: 16,
             background: C.panel,
@@ -330,7 +332,7 @@ export default function App() {
               spellCheck={false}
             />
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   );

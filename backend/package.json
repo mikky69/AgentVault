@@ -10,9 +10,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/pg": "^8.23.1",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.2",
-    "fastify": "^4.28.1"
+    "fastify": "^4.28.1",
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.5.0",

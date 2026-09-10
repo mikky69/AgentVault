@@ -86,7 +86,7 @@ forge script script/Deploy.s.sol:Deploy --rpc-url base_sepolia --broadcast
 ```bash
 cd backend
 npm install
-cp .env.example .env            # fill in RPC URL, contract address, owner key
+cp .env.example .env            # fill in the deployment and wallet settings
 npm run dev
 ```
 
@@ -95,11 +95,11 @@ accepts either the bare id or the full checkout URL the counterparty
 shares from their own Moove dashboard:
 
 ```bash
-curl -X POST localhost:3000/agents/<agentAddress>/policy \
+curl -X POST localhost:3001/agents/<agentAddress>/policy \
   -H 'content-type: application/json' \
   -d '{"dailyCap": "100000000"}'   # 100 USDC (6 decimals)
 
-curl -X POST localhost:3000/agents/<agentAddress>/counterparties \
+curl -X POST localhost:3001/agents/<agentAddress>/counterparties \
   -H 'content-type: application/json' \
   -d '{"identifier": "provider-a", "moovePaymentLinkId": "https://www.moove.xyz/@provider-a/pay/0c8f2e5a-...", "label": "Provider A"}'
 ```
@@ -113,7 +113,7 @@ it directly if the asset matches.
 ```bash
 cd dashboard
 npm install
-cp .env.example .env    # set VITE_AGENT_ADDRESS to the agent you're watching
+cp .env.example .env    # set VITE_AGENT_ADDRESS to the funded agent wallet
 npm run dev             # http://localhost:5173
 ```
 
