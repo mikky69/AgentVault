@@ -78,6 +78,16 @@ export async function validateSettlementConfiguration(): Promise<void> {
   }
 }
 
+export async function validatePaymentLink(linkId: string): Promise<void> {
+  const link = await fetchPaymentLink(linkId);
+  if (!link) throw new Error("The Moove payment link was not found.");
+  if (link.status !== "active") throw new Error("The Moove payment link is not active.");
+  if (!isAddress(link.destinationAddress)) throw new Error("The Moove payment link does not have a valid EVM destination address.");
+  if (link.token.address.toLowerCase() !== OUR_TOKEN_ADDRESS || link.token.chain.id !== OUR_CHAIN_ID) {
+    throw new Error("The Moove payment link must use the treasury's configured token and chain.");
+  }
+}
+
 function getRelayerWallet(): Wallet {
   if (!RELAYER_RPC_URL || !RELAYER_PRIVATE_KEY) {
     throw new Error("SETTLEMENT_RPC_URL and RELAYER_PRIVATE_KEY must be set to execute a live settlement.");

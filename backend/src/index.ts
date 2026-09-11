@@ -3,9 +3,8 @@ import Fastify from "fastify";
 import { adminRoutes } from "./routes/admin.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { demoRoutes } from "./routes/demo.js";
-import { startSpendListener } from "./services/treasuryContract.js";
+import { startSpendListener, validateTreasuryConfiguration } from "./services/treasuryContract.js";
 import { checkDatabase } from "./services/database.js";
-import { validateSettlementConfiguration } from "./services/mooveClient.js";
 
 const app = Fastify({ logger: true });
 
@@ -15,8 +14,8 @@ app.addHook("onRequest", async (req, reply) => {
   if (origin === dashboardOrigin) {
     reply.header("Access-Control-Allow-Origin", origin);
     reply.header("Vary", "Origin");
-    reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    reply.header("Access-Control-Allow-Headers", "Content-Type");
+    reply.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    reply.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
   }
 
   if (req.method === "OPTIONS") {
@@ -46,6 +45,6 @@ await app.register(demoRoutes);
 const PORT = Number(process.env.PORT ?? 3001);
 
 await checkDatabase();
-await validateSettlementConfiguration();
+await validateTreasuryConfiguration();
 await startSpendListener();
 await app.listen({ port: PORT, host: "0.0.0.0" });

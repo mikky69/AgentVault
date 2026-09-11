@@ -1,0 +1,76 @@
+services:
+  - type: web
+    runtime: node
+    name: agentvault-api
+    region: frankfurt
+    plan: starter
+    rootDir: backend
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npm run db:migrate
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - backend/**
+        - contracts/src/**
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: DATABASE_POOL_SIZE
+        value: "5"
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: EVM_RPC_URL
+        sync: false
+      - key: CHAIN_ID
+        value: "8453"
+      - key: AGENT_TREASURY_ADDRESS
+        sync: false
+      - key: OWNER_PRIVATE_KEY
+        sync: false
+      - key: RELAYER_PRIVATE_KEY
+        sync: false
+      - key: SETTLEMENT_RPC_URL
+        sync: false
+      - key: SETTLEMENT_TOKEN_ADDRESS
+        value: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+      - key: SETTLEMENT_CHAIN_ID
+        value: "8453"
+      - key: CONTRACT_DEPLOYMENT_BLOCK
+        sync: false
+      - key: EVENT_CONFIRMATIONS
+        value: "3"
+      - key: EVENT_POLL_INTERVAL_MS
+        value: "12000"
+      - key: ENABLE_DEMO_SPEND
+        value: "false"
+      - key: DASHBOARD_ORIGIN
+        sync: false
+
+  - type: web
+    runtime: static
+    name: agentvault-dashboard
+    rootDir: dashboard
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    buildFilter:
+      paths:
+        - dashboard/**
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: VITE_BACKEND_URL
+        sync: false
+      - key: VITE_AGENT_ADDRESS
+        sync: false
+      - key: VITE_ENABLE_DEMO_SPEND
+        value: "false"

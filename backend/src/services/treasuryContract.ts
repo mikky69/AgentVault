@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { Contract, JsonRpcProvider, Wallet, isAddress, getAddress } from "ethers";
-import { activateCounterparty, counterpartyIdFor, resolveCounterparty, stageCounterparty } from "./counterpartyRegistry.js";
+import { Contract, JsonRpcProvider, Wallet, isAddress, isHexString, getAddress } from "ethers";
+import { activateCounterparty, counterpartyIdFor, deactivateCounterparty, resolveCounterparty, stageCounterparty } from "./counterpartyRegistry.js";
 import { getCheckpoint, getDueSpends, markSpendProcessing, markSpendResult, recordSpendEvent, setCheckpoint } from "./auditLog.js";
-import { settle } from "./mooveClient.js";
+import { extractPaymentLinkId, settle, validatePaymentLink, validateSettlementConfiguration } from "./mooveClient.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const treasuryArtifact = JSON.parse(readFileSync(path.join(__dirname, "../abi/AgentTreasury.json"), "utf8"));
@@ -61,11 +61,24 @@ export async function allowCounterparty(
   label?: string
 ) {
   const agent = requireAgentAddress(agentAddress);
-  const id = await stageCounterparty(agent, { identifier, moovePaymentLinkId, label });
+  const normalizedIdentifier = identifier.trim();
+  if (!normalizedIdentifier || normalizedIdentifier.length > 128) throw new Error("identifier must contain 1 to 128 characters.");
+  const normalizedLinkId = extractPaymentLinkId(moovePaymentLinkId.trim());
+  await validatePaymentLink(normalizedLinkId);
+  const id = await stageCounterparty(agent, { identifier: normalizedIdentifier, moovePaymentLinkId: normalizedLinkId, label: label?.trim() || undefined });
   const tx = await getAdminContract().setCounterpartyAllowed(agent, id, true);
   await tx.wait();
   await activateCounterparty(agent, id);
   return { counterpartyId: id };
+}
+
+export async function disallowCounterparty(agentAddress: string, counterpartyId: string) {
+  const agent = requireAgentAddress(agentAddress);
+  if (!isHexString(counterpartyId, 32)) throw new Error("counterparty id must be a bytes32 value.");
+  const tx = await getAdminContract().setCounterpartyAllowed(agent, counterpartyId, false);
+  const receipt = await tx.wait();
+  await deactivateCounterparty(agent, counterpartyId);
+  return receipt;
 }
 
 export async function getAgentStatus(agentAddress: string) {
@@ -82,6 +95,29 @@ export async function getAgentStatus(agentAddress: string) {
     remainingDailyAllowance: remainingDailyAllowance.toString(),
     dailyCap: policy.exists ? policy[0].toString() : "0",
   };
+}
+
+export async function validateTreasuryConfiguration(): Promise<void> {
+  const { readContract } = requireConfigured();
+  const [owner, token, settlementRelayer] = await Promise.all([
+    readContract.owner(),
+    readContract.token(),
+    readContract.settlementRelayer(),
+  ]);
+  if (!OWNER_PRIVATE_KEY) throw new Error("OWNER_PRIVATE_KEY must be configured.");
+  const configuredOwner = new Wallet(OWNER_PRIVATE_KEY).address;
+  if (owner.toLowerCase() !== configuredOwner.toLowerCase()) {
+    throw new Error("OWNER_PRIVATE_KEY does not match the deployed AgentTreasury owner.");
+  }
+  if (!process.env.SETTLEMENT_TOKEN_ADDRESS || token.toLowerCase() !== process.env.SETTLEMENT_TOKEN_ADDRESS.toLowerCase()) {
+    throw new Error("SETTLEMENT_TOKEN_ADDRESS does not match the deployed AgentTreasury token.");
+  }
+  if (!process.env.RELAYER_PRIVATE_KEY) throw new Error("RELAYER_PRIVATE_KEY must be configured.");
+  const configuredRelayer = new Wallet(process.env.RELAYER_PRIVATE_KEY).address;
+  if (settlementRelayer.toLowerCase() !== configuredRelayer.toLowerCase()) {
+    throw new Error("RELAYER_PRIVATE_KEY does not match the deployed AgentTreasury settlementRelayer.");
+  }
+  await validateSettlementConfiguration();
 }
 
 export async function submitDemoSpend(agentPrivateKey: string, counterpartyIdentifier: string, amountSmallestUnit: bigint) {
@@ -123,7 +159,9 @@ async function processDueSpends(): Promise<void> {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await markSpendResult(spend.requestId, "error", { errorMessage: message, retry: true });
+      // A downstream ERC20 transfer may have been broadcast before an RPC error.
+      // Do not auto-retry an unknown outcome or the relayer could pay twice.
+      await markSpendResult(spend.requestId, "error", { errorMessage: message, retry: false });
     }
   }
 }

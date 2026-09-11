@@ -63,7 +63,7 @@ export async function getDueSpends(limit = 25): Promise<PendingSpend[]> {
   const result = await getDatabase().query<Record<string, unknown>>(
     `select request_id, transaction_hash, log_index, block_number, agent_address, counterparty_id, amount, attempt_count
      from spend_events
-     where (status in ('pending', 'error', 'link_not_found', 'unresolved_counterparty') and next_attempt_at <= now())
+     where (status in ('pending', 'link_not_found', 'unresolved_counterparty') and next_attempt_at <= now())
         or (status = 'processing' and updated_at < now() - interval '5 minutes')
      order by block_number asc, log_index asc
      limit $1`,
@@ -84,7 +84,7 @@ export async function getDueSpends(limit = 25): Promise<PendingSpend[]> {
 export async function markSpendProcessing(requestId: string): Promise<boolean> {
   const result = await getDatabase().query(
     `update spend_events set status = 'processing', updated_at = now()
-     where request_id = $1 and status in ('pending', 'error', 'link_not_found', 'unresolved_counterparty', 'processing')`,
+     where request_id = $1 and status in ('pending', 'link_not_found', 'unresolved_counterparty', 'processing')`,
     [requestId]
   );
   return result.rowCount === 1;

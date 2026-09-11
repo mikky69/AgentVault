@@ -41,6 +41,13 @@ export async function activateCounterparty(agentAddress: string, counterpartyId:
   );
 }
 
+export async function deactivateCounterparty(agentAddress: string, counterpartyId: string): Promise<void> {
+  await getDatabase().query(
+    "update counterparties set active = false, updated_at = now() where agent_address = $1 and counterparty_id = $2",
+    [agentAddress.toLowerCase(), counterpartyId]
+  );
+}
+
 export async function resolveCounterparty(agentAddress: string, counterpartyId: string): Promise<CounterpartyRecord | undefined> {
   const result = await getDatabase().query<{
     identifier: string;

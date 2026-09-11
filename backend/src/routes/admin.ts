@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { setAgentPolicy, allowCounterparty } from "../services/treasuryContract.js";
+import { setAgentPolicy, allowCounterparty, disallowCounterparty } from "../services/treasuryContract.js";
 import { requireAdmin } from "../services/adminAuth.js";
 
 export async function adminRoutes(app: FastifyInstance) {
@@ -43,4 +43,12 @@ export async function adminRoutes(app: FastifyInstance) {
     const result = await allowCounterparty(address, identifier, moovePaymentLinkId, label);
     return { ok: true, ...result };
   });
+
+  app.delete<{ Params: { address: string; counterpartyId: string } }>(
+    "/agents/:address/counterparties/:counterpartyId",
+    async (req) => {
+      const receipt = await disallowCounterparty(req.params.address, req.params.counterpartyId);
+      return { ok: true, txHash: receipt?.hash };
+    }
+  );
 }

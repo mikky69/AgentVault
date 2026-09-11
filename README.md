@@ -17,14 +17,14 @@ AI Agent (own wallet)
       |
       | spend(counterpartyId, amount, requestId)
       v
-AgentTreasury.sol  (Base Sepolia)
+AgentTreasury.sol  (configured EVM network)
   - checks: policy exists, counterparty allowed, within daily cap,
     requestId not reused, sufficient balance
   - moves funds: agent balance -> settlementRelayer address
   - emits: SpendExecuted
       |
       v
-Backend event listener (ethers.js)
+Backend event worker (ethers.js + Postgres)
   - resolves counterpartyId -> the counterparty's own Moove payment link id
   - fetches that link's public data (GET /v1/payment-link/{id}, no auth needed)
   - if the link's token+chain match what the treasury holds: relayer sends
@@ -34,8 +34,8 @@ Backend event listener (ethers.js)
     way to deliver a different asset/chain
       |
       v
-Dashboard (React/Vite, terminal-style) polls /agents/:address and
-/counterparties, and can trigger a demo spend() from its command line
+Dashboard (React/Vite, terminal-style) polls the selected agent status and
+its persisted counterparty and settlement history
 ```
 
 **Why the settlement leg works this way, not as a generic "pay Moove"
@@ -74,11 +74,11 @@ dashboard/   React/Vite terminal-style monitor — single-agent view, live activ
 cd contracts
 forge test                      # 11 tests should pass
 
-# Deploy to Base Sepolia:
+# Deploy to the intended network:
 export DEPLOYER_PRIVATE_KEY=...
-export SETTLEMENT_TOKEN=...     # USDC address on Base Sepolia
+export SETTLEMENT_TOKEN=...     # USDC address on the deployment chain
 export SETTLEMENT_RELAYER=...   # address the backend controls
-forge script script/Deploy.s.sol:Deploy --rpc-url base_sepolia --broadcast
+forge script script/Deploy.s.sol:Deploy --rpc-url <mainnet-rpc-alias-or-url> --broadcast
 ```
 
 ### Backend
@@ -87,8 +87,18 @@ forge script script/Deploy.s.sol:Deploy --rpc-url base_sepolia --broadcast
 cd backend
 npm install
 cp .env.example .env            # fill in the deployment and wallet settings
+npm run db:migrate              # apply Postgres schema before the API starts
 npm run dev
 ```
+
+For production, create a Supabase project and use its direct Postgres
+connection string for `DATABASE_URL`. The service uses standard Postgres
+through `pg`, so it is portable to Neon, RDS, or a self-hosted database.
+`DATABASE_URL` must use the database password from Supabase, never the
+browser-facing Supabase anon key.
+
+Set `ADMIN_API_KEY` to a high-entropy secret. All policy and counterparty
+administration calls require `Authorization: Bearer <ADMIN_API_KEY>`.
 
 Register an agent's policy and a counterparty. `moovePaymentLinkId`
 accepts either the bare id or the full checkout URL the counterparty
@@ -96,10 +106,12 @@ shares from their own Moove dashboard:
 
 ```bash
 curl -X POST localhost:3001/agents/<agentAddress>/policy \
+  -H 'Authorization: Bearer <ADMIN_API_KEY>' \
   -H 'content-type: application/json' \
   -d '{"dailyCap": "100000000"}'   # 100 USDC (6 decimals)
 
 curl -X POST localhost:3001/agents/<agentAddress>/counterparties \
+  -H 'Authorization: Bearer <ADMIN_API_KEY>' \
   -H 'content-type: application/json' \
   -d '{"identifier": "provider-a", "moovePaymentLinkId": "https://www.moove.xyz/@provider-a/pay/0c8f2e5a-...", "label": "Provider A"}'
 ```
@@ -107,6 +119,13 @@ curl -X POST localhost:3001/agents/<agentAddress>/counterparties \
 Once the agent calls `spend()` on-chain directly (from its own wallet),
 the listener picks up the event, looks up that payment link, and settles
 it directly if the asset matches.
+
+Set `CONTRACT_DEPLOYMENT_BLOCK` to the deployment transaction's block. The
+worker waits for `EVENT_CONFIRMATIONS`, persists every `SpendExecuted` event
+and an indexing checkpoint in Postgres, then settles pending events with
+idempotent records and safe retry backoff. Unknown downstream transfer outcomes
+are held for reconciliation instead of being automatically retried. This
+prevents an API restart from forgetting a counterparty or skipping an event.
 
 ### Dashboard
 
@@ -117,7 +136,13 @@ cp .env.example .env    # set VITE_AGENT_ADDRESS to the funded agent wallet
 npm run dev             # http://localhost:5173
 ```
 
-Type `spend <counterparty-identifier> <amount>` into the terminal's
-command line (e.g. `spend provider-a 10`) to trigger a real `spend()`
-call from the demo agent wallet — this is what the activity log then
-picks up and settles.
+The dashboard manages the selected agent's daily cap and counterparties. Paste
+`ADMIN_API_KEY` into the Operator API key field only for the active browser
+session; it is not written to browser storage. Counterparty registration first
+validates that the linked Moove payment link is active and uses the configured
+settlement token and chain. Revoking a counterparty updates both the on-chain
+allowlist and the durable registry.
+
+The dashboard command-line demo is disabled by default and must stay disabled
+on mainnet. Production agents sign `spend()` with their own wallet; the backend
+does not accept a browser request that signs with an agent private key.

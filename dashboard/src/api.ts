@@ -27,6 +27,12 @@ export interface Counterparty {
   label?: string;
 }
 
+interface AdminRequestOptions {
+  method: "POST" | "DELETE";
+  adminKey: string;
+  body?: unknown;
+}
+
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -35,18 +41,45 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+function adminRequest<T>(path: string, options: AdminRequestOptions): Promise<T> {
+  return fetch(`${BACKEND_URL}${path}`, {
+    method: options.method,
+    headers: {
+      authorization: `Bearer ${options.adminKey}`,
+      "content-type": "application/json",
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  }).then((response) => asJson<T>(response));
+}
+
 export function fetchAgentStatus(agent: string): Promise<AgentStatus> {
-  return fetch(`${BACKEND_URL}/agents/${agent}`).then((r) => asJson<AgentStatus>(r));
+  return fetch(`${BACKEND_URL}/agents/${agent}`).then((response) => asJson<AgentStatus>(response));
 }
 
 export function fetchCounterparties(agent: string): Promise<{ entries: Counterparty[] }> {
-  return fetch(`${BACKEND_URL}/agents/${agent}/counterparties`).then((r) => asJson(r));
+  return fetch(`${BACKEND_URL}/agents/${agent}/counterparties`).then((response) => asJson(response));
 }
 
-export function submitDemoSpend(counterpartyIdentifier: string, amountSmallestUnit: string) {
-  return fetch(`${BACKEND_URL}/demo/spend`, {
+export function updateDailyCap(agent: string, dailyCap: string, adminKey: string): Promise<{ ok: true; txHash?: string }> {
+  return adminRequest(`/agents/${agent}/policy`, { method: "POST", adminKey, body: { dailyCap } });
+}
+
+export function registerCounterparty(
+  agent: string,
+  input: { identifier: string; moovePaymentLinkId: string; label?: string },
+  adminKey: string
+): Promise<{ ok: true; counterpartyId: string }> {
+  return adminRequest(`/agents/${agent}/counterparties`, { method: "POST", adminKey, body: input });
+}
+
+export function revokeCounterparty(agent: string, counterpartyId: string, adminKey: string): Promise<{ ok: true; txHash?: string }> {
+  return adminRequest(`/agents/${agent}/counterparties/${counterpartyId}`, { method: "DELETE", adminKey });
+}
+
+export function submitDemoSpend(counterpartyIdentifier: string, amountSmallestUnit: string, adminKey: string) {
+  return adminRequest<{ ok: true; txHash: string; requestId: string; agent: string }>("/demo/spend", {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ counterpartyIdentifier, amount: amountSmallestUnit }),
-  }).then((r) => asJson<{ ok: true; txHash: string; requestId: string; agent: string }>(r));
+    adminKey,
+    body: { counterpartyIdentifier, amount: amountSmallestUnit },
+  });
 }
